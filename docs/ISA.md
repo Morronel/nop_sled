@@ -217,7 +217,7 @@ Linux x86-64.
 | `0x00` | `read` | `B`=fd, `C`=buf, `D`=len | Copies up to `len` bytes of stdin to `buf`. Does **not** NUL-terminate and does not stop at newlines. Returns bytes read, `0` at EOF, `-EFAULT` if the first byte isn't writable (a partial count if a later one isn't). Only fd 0. |
 | `0x01` | `write` | `B`=fd, `C`=buf, `D`=len | Writes `len` bytes to stdout (fd 1) or stderr (fd 2). `-EFAULT` if unreadable. |
 | `0x15` | `access` | `B`=path | Returns `-EFAULT` if `path` is unmapped, otherwise `-ENOENT`. Used as a safe memory probe by egg hunters (ch.5). |
-| `0x3B` | `execve` | `B`=path, `C`=argv, `D`=envp | `path` must be a readable NUL-terminated string. `argv`/`envp` must be `0` or readable. If `path` is `"/bin/sh"` the process is replaced by a shell (goal of most chapters). Otherwise `-ENOENT`. |
+| `0x3B` | `execve` | `B`=path, `C`=argv, `D`=envp | `path` must be a readable NUL-terminated string. `argv`/`envp` must each be `0` or a readable NULL-terminated array of pointers to readable strings, otherwise `-EFAULT` (so leftover garbage in `C`/`D` breaks it, as on Linux). If `path` is `"/bin/sh"` the process is replaced by a shell (goal of most chapters). Otherwise `-ENOENT`. |
 | `0x3C` | `exit` | `B`=status | Terminates the process. |
 
 Unknown numbers return `-ENOSYS` (`0xFFDA`). `fd` values other than those listed
@@ -267,8 +267,10 @@ one place where the game's model would be wrong if taken literally.
    debugger (gdb sets `LINES`/`COLUMNS`) all shift it too. The sled makes the
    jump target a range instead of an exact address. That is the real reason
    sleds exist; they are not needed when the address is known exactly.
-7. **`execve` checks.** Only the path is compared, against `"/bin/sh"`.
-   Linux also accepts `argv = NULL`, which is what minimal shellcode does.
+7. **`execve` checks.** The path is compared against `"/bin/sh"` instead of
+   looking up a filesystem. `argv`/`envp` are validated like the kernel does
+   (walk the pointer array until NULL). Linux accepts `argv = NULL`, which is
+   what minimal shellcode passes.
 8. **Cycles are fictional.** They exist for the score histograms only.
 9. **Self-modifying code.** Writes to an executable page take effect on the
    next fetch (no instruction cache to flush), which is how x86 behaves. On
