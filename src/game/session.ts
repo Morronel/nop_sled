@@ -111,7 +111,8 @@ export class Session {
     cpu.step();
     // After PUSH BP; MOV BP, SP (3 bytes) the frame pointer is established.
     if (this.frameBP === undefined && cpu.ip === this.sym(this.level.frame.fn) + 3) this.frameBP = cpu.regs[BP];
-    if (goal.type === 'shell' && cpu.status === 'shell' && !this.goalReached) this.markGoal();
+    // step() may have changed status; re-read it rather than trusting the narrowed type.
+    if (goal.type === 'shell' && (cpu.status as string) === 'shell' && !this.goalReached) this.markGoal();
   }
 
   private markGoal(): void {
