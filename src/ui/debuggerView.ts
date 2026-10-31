@@ -1,7 +1,7 @@
 // Debugger: step through a Session and inspect registers, code, stack and I/O.
 
 import { disassemble } from '../cpu/disasm';
-import { BP, hex2, hex4, REG_NAMES, SP } from '../cpu/isa';
+import { hex2, hex4, PTR, REG_NAMES, SP } from '../cpu/isa';
 import type { LevelDef } from '../game/level';
 import { labelsOf, Session } from '../game/session';
 import { fmt, S } from '../i18n';
@@ -150,9 +150,8 @@ export class DebuggerView {
       const changed = this.prevRegs.length > 0 && this.prevRegs[i] !== cpu.regs[i];
       return h('div', { class: `reg${changed ? ' changed' : ''}` }, h('span', { class: 'rn' }, n), `0x${hex4(cpu.regs[i])}`);
     });
-    const ipChanged = this.prevRegs.length > 0 && this.prevRegs[6] !== cpu.ip;
+    const ipChanged = this.prevRegs.length > 0 && this.prevRegs[REG_NAMES.length] !== cpu.ip;
     cells.push(h('div', { class: `reg${ipChanged ? ' changed' : ''}` }, h('span', { class: 'rn' }, 'IP'), `0x${hex4(cpu.ip)}`));
-    cells.push(h('div', { class: 'reg' }, h('span', { class: 'rn' }, 'FL'), `${cpu.z ? 'Z' : '·'}${cpu.c ? 'C' : '·'}`));
     return h('section', { class: 'card' }, h('h3', null, S().debug.registers), h('div', { class: 'regs-grid' }, cells));
   }
 
@@ -203,13 +202,12 @@ export class DebuggerView {
     const cpu = s.cpu;
     const mem = cpu.mem;
     const sp = cpu.regs[SP];
-    const bp = cpu.regs[BP];
-    const fbp = s.frameBP;
+    const ra = s.frameRA;
     const slots = this.level.frame.slots;
 
     // From the lowest interesting address up to the first env word.
     let lo = sp;
-    if (fbp !== undefined) lo = Math.min(lo, fbp + Math.min(...slots.map((x) => x.offset)));
+    if (ra !== undefined) lo = Math.min(lo, ra + Math.min(...slots.map((x) => x.offset)));
     lo = (lo - 4) & 0xfffe;
     let hi = Math.min(0xfffe, (s.entrySP + 2) & 0xfffe);
     if (hi - lo > 160) hi = Math.min(0xfffe, lo + 160);
@@ -218,11 +216,10 @@ export class DebuggerView {
     const rows: HTMLElement[] = [];
     for (let a = hi; a >= lo; a -= 2) {
       const notes: string[] = [];
-      if (fbp !== undefined) {
-        if (a === fbp) notes.push(t.savedBP);
-        if (a === fbp + 2) notes.push(t.retAddr);
+      if (ra !== undefined) {
+        if (a === ra) notes.push(t.retAddr);
         for (const slot of slots) {
-          const start = fbp + slot.offset;
+          const start = ra + slot.offset;
           if (a >= start && a < start + slot.size) notes.push(a === start ? slot.name : '┆');
         }
       }
@@ -241,7 +238,7 @@ export class DebuggerView {
         h(
           'div',
           { class: `srow${a === sp ? ' at-sp' : ''}` },
-          h('span', { class: 'ptr' }, a === sp ? 'SP▸' : a === bp ? 'BP▸' : ''),
+          h('span', { class: 'ptr' }, a === sp ? 'SP▸' : a === cpu.regs[PTR] ? 'PTR▸' : ''),
           h('span', { class: 'addr' }, hex4(a)),
           byteSpan(a, b0),
           byteSpan(a + 1, b1),

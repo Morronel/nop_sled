@@ -21,29 +21,29 @@ int main(void) {
 }`,
   text: `${CRT0}
 main:
-    PUSH BP
-    MOV  BP, SP
     CALL greet
-    XOR  A, A
-    LEAVE
+    MOV  0, ACC
     RET
 
 greet:
-    PUSH BP
-    MOV  BP, SP
-    SUB  SP, 48         ; name @ BP-48
-    MOV  A, 1           ; SYS_write
-    MOV  B, 1
-    MOV  C, prompt
-    MOV  D, 13
-    SYSCALL
-    XOR  A, A           ; SYS_read
-    XOR  B, B
-    MOV  C, BP
-    SUB  C, 48
-    MOV  D, 128
-    SYSCALL
-    LEAVE
+    ADJ  -48            ; name @ SP+0
+    MOV  13, ACC        ; write(1, prompt, 13)
+    PUSH
+    MOV  prompt, ACC
+    PUSH
+    MOV  1, ACC
+    PUSH
+    SYS
+    ADJ  6
+    MOV  128, ACC       ; read(0, name, 128)
+    PUSH
+    MOV  SP, ACC
+    ADD  2
+    PUSH
+    MOV  0, ACC
+    PUSH
+    SYS
+    ADJ  54             ; drop the arguments and name
     RET
 `,
   data: `
@@ -60,5 +60,5 @@ bin_sh:      .asciz "/bin/sh"
   ],
   goal: { type: 'shell' },
   frame: { fn: 'greet', slots: [{ name: 'name[48]', offset: -48, size: 48 }] },
-  par: { bytes: 52, cycles: 90, insns: 50 },
+  par: { bytes: 50, cycles: 81, insns: 57 },
 };

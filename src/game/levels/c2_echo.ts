@@ -24,42 +24,43 @@ int main(void) {
 }`,
   text: `${CRT0}
 win:
-    PUSH BP
-    MOV  BP, SP
-    MOV  A, 1
-    MOV  B, 1
-    MOV  C, flag
-    MOV  D, flag_end-flag
-    SYSCALL
-    MOV  A, 0x3C
-    XOR  B, B
-    SYSCALL
+    MOV  flag_end-flag, ACC
+    PUSH
+    MOV  flag, ACC
+    PUSH
+    MOV  1, ACC
+    PUSH
+    SYS                 ; write(1, flag, len)
+    MOV  0, ACC
+    PUSH
+    MOV  0x3C, ACC
+    SYS                 ; exit(0)
 
 echo:
-    PUSH BP
-    MOV  BP, SP
-    SUB  SP, 8          ; buf @ BP-8
-    XOR  A, A           ; SYS_read
-    XOR  B, B
-    MOV  C, BP
-    SUB  C, 8
-    MOV  D, 64
-    SYSCALL
-    MOV  A, 1           ; SYS_write
-    MOV  B, 1
-    MOV  C, BP
-    SUB  C, 8
-    MOV  D, 8
-    SYSCALL
-    LEAVE
-    RET
+    ADJ  -8             ; buf @ SP+0
+    MOV  64, ACC        ; read(0, buf, 64)
+    PUSH
+    MOV  SP, ACC
+    ADD  2
+    PUSH
+    MOV  0, ACC
+    PUSH
+    SYS
+    ADJ  6
+    MOV  8, ACC         ; write(1, buf, 8)
+    PUSH
+    MOV  SP, ACC
+    ADD  2
+    PUSH
+    MOV  1, ACC
+    PUSH
+    SYS
+    ADJ  14             ; drop the arguments and buf
+    RET                 ; IP = word at SP
 
 main:
-    PUSH BP
-    MOV  BP, SP
     CALL echo
-    XOR  A, A
-    LEAVE
+    MOV  0, ACC
     RET
 `,
   data: `
@@ -70,5 +71,5 @@ flag_end:
   envs: [['USER=ctf', 'SHELL=/bin/sh', 'PATH=/usr/bin:/bin']],
   goal: { type: 'reach', symbol: 'win' },
   frame: { fn: 'echo', slots: [{ name: 'buf[8]', offset: -8, size: 8 }] },
-  par: { bytes: 12, cycles: 49, insns: 21 },
+  par: { bytes: 10, cycles: 39, insns: 22 },
 };

@@ -1,11 +1,15 @@
-// A small two-pass assembler for SK-16. Level programs are written with it, so
+// A small two-pass assembler for SK-1. Level programs are written with it, so
 // the disassembly the player reads is generated from the same bytes that run.
 //
 // Syntax:   label:  MNEM op, op   ; comment
-// Operands: A B C D SP BP | [reg] | 0x1F, 31, -2, 'A' | label, label+2, label-1
+// Forms:    NOP SWP LD ST PUSH POP RET SYS
+//           MOV v, ACC | MOV SP, ACC | MOV ACC, SP
+//           ADD v | SUB v | ADJ v
+//           JMP t | JEZ t | JNZ t | CALL t     (t is an absolute target; encoded relative)
+// Values:   0x1F, 31, -2, 'A', label, label+2, end-start
 // Directives (any section): .ascii "s"  .asciz "s"  .byte 1,2  .word 0x1337  .zero 8
 
-import { REG_NAMES, encode, findDef, type Form, type Insn, type Mnemonic } from './isa';
+import { encode, INSN_DEFS, sizeOf, type InsnDef } from './isa';
 
 export interface ListingLine {
   addr: number;
@@ -31,11 +35,6 @@ export class AsmError extends Error {
   }
 }
 
-type Operand =
-  | { k: 'reg'; r: number }
-  | { k: 'mem'; r: number }
-  | { k: 'expr'; text: string };
-
 interface Item {
   section: string;
   line: number;
@@ -44,28 +43,6 @@ interface Item {
   label?: string;
   source: string;
   emit: (sym: (e: string) => number) => number[];
-}
-
-const MNEMONICS = new Set<Mnemonic>([
-  'NOP', 'MOV', 'LD', 'ST', 'ADD', 'SUB', 'AND', 'XOR', 'CMP',
-  'JMP', 'JZ', 'JNZ', 'CALL', 'RET', 'LEAVE', 'PUSH', 'POP', 'SYSCALL',
-]);
-
-function regIndex(t: string): number {
-  return (REG_NAMES as readonly string[]).indexOf(t.toUpperCase());
-}
-
-function parseOperand(t: string): Operand {
-  t = t.trim();
-  const m = /^\[\s*(\w+)\s*\]$/.exec(t);
-  if (m) {
-    const r = regIndex(m[1]);
-    if (r < 0) throw new Error(`bad memory operand ${t}`);
-    return { k: 'mem', r };
-  }
-  const r = regIndex(t);
-  if (r >= 0) return { k: 'reg', r };
-  return { k: 'expr', text: t };
 }
 
 function parseNumber(t: string): number | undefined {
@@ -119,36 +96,29 @@ function splitOperands(s: string): string[] {
   return s.split(',').map((x) => x.trim());
 }
 
-function instructionItem(mn: Mnemonic, ops: Operand[]): { size: number; build: (sym: (e: string) => number, addr: number) => Insn } {
-  const kinds = ops.map((o) => o.k).join(',');
-  let form: Form;
-  if (ops.length === 0) form = 'none';
-  else if (kinds === 'reg') form = 'r';
-  else if (kinds === 'reg,reg') form = 'r_r';
-  else if (kinds === 'reg,expr') form = 'r_imm';
-  else if (kinds === 'reg,mem') form = 'r_mem';
-  else if (kinds === 'mem,reg') form = 'mem_r';
-  else if (kinds === 'expr') form = mn === 'CALL' ? 'rel16' : 'rel8';
-  else throw new Error(`bad operands for ${mn}`);
-  const def = findDef(mn, form);
-  if (!def) throw new Error(`${mn} has no ${form} form`);
-  const reg = (o: Operand) => (o.k === 'expr' ? 0 : o.r);
-  return {
-    size: def.size,
-    build: (sym, addr) => {
-      const insn: Insn = { mn, form };
-      if (ops[0] && ops[0].k !== 'expr') insn.d = reg(ops[0]);
-      if (ops[1] && ops[1].k !== 'expr') insn.s = reg(ops[1]);
-      const ex = ops.find((o) => o.k === 'expr') as { k: 'expr'; text: string } | undefined;
-      if (ex) {
-        const v = sym(ex.text);
-        if (form === 'rel8' || form === 'rel16') insn.imm = v - (addr + def.size);
-        else insn.imm = v & 0xffff;
-        if (form === 'rel16') insn.imm &= 0xffff;
-      }
-      return insn;
-    },
-  };
+const MNEMONICS = new Set(INSN_DEFS.map((d) => d.mn));
+
+/** Pick the instruction definition for a mnemonic and its operand texts. */
+function instructionDef(mn: string, ops: string[]): { def: InsnDef; expr?: string } {
+  const up = ops.map((o) => o.toUpperCase());
+  const find = (pred: (d: InsnDef) => boolean) => INSN_DEFS.find((d) => d.mn === mn && pred(d));
+  let def: InsnDef | undefined;
+  let expr: string | undefined;
+  if (ops.length === 0) {
+    def = find((d) => d.syntax === '');
+  } else if (mn === 'MOV' && ops.length === 2) {
+    if (up[0] === 'SP' && up[1] === 'ACC') def = find((d) => d.id === 'mov_sp');
+    else if (up[0] === 'ACC' && up[1] === 'SP') def = find((d) => d.id === 'mov_acc');
+    else if (up[1] === 'ACC') {
+      def = find((d) => d.id === 'mov_i');
+      expr = ops[0];
+    }
+  } else if (ops.length === 1) {
+    def = find((d) => d.form !== 'none');
+    expr = ops[0];
+  }
+  if (!def) throw new Error(`bad operands for ${mn}: ${ops.join(', ')}`);
+  return { def, expr };
 }
 
 export function assemble(sources: Record<string, { base: number; src: string }>): Program {
@@ -219,12 +189,16 @@ export function assemble(sources: Record<string, { base: number; src: string }>)
           }
           return;
         }
-        const mn = word.toUpperCase() as Mnemonic;
+        const mn = word.toUpperCase();
         if (!MNEMONICS.has(mn)) fail(`unknown mnemonic ${word}`);
-        const ops = splitOperands(rest).map(parseOperand);
-        const it = instructionItem(mn, ops);
+        const { def, expr } = instructionDef(mn, splitOperands(rest));
         const at = addr;
-        push(it.size, (sym) => encode(it.build(sym, at)));
+        const size = sizeOf(def);
+        push(size, (sym) => {
+          if (expr === undefined) return encode({ id: def.id });
+          const v = sym(expr);
+          return encode({ id: def.id, imm: def.form === 'rel' ? v - (at + size) : v & 0xffff });
+        });
       } catch (e) {
         if (e instanceof AsmError) throw e;
         fail((e as Error).message);

@@ -323,7 +323,7 @@ pre { margin: 0; font-family: var(--font); }
 }
 .scroll { position: relative; max-height: 300px; overflow: auto; }
 .stack .scroll { font-size: 12px; }
-.srow { display: grid; grid-template-columns: 3ch 4.5ch 2.5ch 2.5ch 6.5ch 1fr; gap: 4px; white-space: nowrap; }
+.srow { display: grid; grid-template-columns: 4ch 4.5ch 2.5ch 2.5ch 6.5ch 1fr; gap: 4px; white-space: nowrap; }
 .srow .ptr { color: var(--hi); }
 .srow .addr { color: var(--fg-dim); }
 .srow .word { color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; }

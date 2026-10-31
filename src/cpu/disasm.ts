@@ -29,7 +29,7 @@ export function disassemble(mem: Memory, start: number, count: number, labels?: 
       const d = decode(peek, addr);
       len = d.len;
       if (d.ok) {
-        text = formatInsn(d.insn, addr, d.len, labels);
+        text = formatInsn(d.insn, addr, labels);
         ok = true;
       }
     } catch {
