@@ -1,14 +1,14 @@
 # NOP SLED
 
 A TIS-100-style puzzle game about buffer overflows and shellcoding, for the
-mobile browser. Each level is a vulnerable program for the **SK-16**, a
-fictional 16-bit CPU. Read the source and disassembly, build an input byte by
-byte with the hex keypad and opcode palette, then step through it in the
-debugger.
+mobile browser. Each level is a vulnerable program for the **SK-1**, a
+fictional 16-bit accumulator CPU with 16 instructions in the spirit of
+TIS-100. Read the source and disassembly, build an input byte by byte with the
+hex keypad and opcode palette, then step through it in the debugger.
 
 * **ISA spec:** [`docs/ISA.md`](docs/ISA.md) (registers, encoding, memory map,
-  calling convention, syscalls, and the fidelity notes on where the game
-  abstracts real exploitation).
+  calling convention, syscalls, the per-chapter "hardware nodes", and the
+  fidelity notes on where the game abstracts real exploitation).
 * **Playable now:** chapters 1–3 (adjacent variable, ret2win, shellcode + NOP
   sled). Chapters 4–8 are designed into the ISA but not built yet.
 
@@ -42,7 +42,8 @@ tests/                 vitest: ISA/CPU behaviour and a reference solution for ea
 ### Adding a level
 
 1. Copy a file in `src/game/levels/`, write the C-like `source`, the `text` and
-   `data` assembly, the frame slots for the debugger, and the environments.
+   `data` assembly, the frame slots for the debugger (offsets from the
+   return-address slot), and the environments.
 2. Register it in `src/game/levels/index.ts`.
 3. Add `title`, `brief`, `hint`, `reality`, `fragment` under `levels` in both
    `src/i18n/en.ts` and `src/i18n/uk.ts`.

@@ -1,67 +1,29 @@
 // Payload editor: chunk strip + hex keypad + opcode palette. No free typing.
 
-import { encode, hex2, hex4, INSN_DEFS, REG_NAMES, type Form, type InsnDef, type Insn } from '../cpu/isa';
+import { encode, hex2, hex4, INSN_DEFS, syntaxOf, type InsnDef, type InsnId, type Insn } from '../cpu/isa';
 import { chunkLength, flatten, type Chunk } from '../game/payload';
 import { fmt, S } from '../i18n';
-import type { Strings } from '../i18n/en';
 import { button, h, replace } from './dom';
 
 type Mode = 'byte' | 'word' | 'asm';
 
-const GROUPS: Record<'data' | 'alu' | 'flow' | 'stack', string[]> = {
-  data: ['nop', 'mov_ri', 'mov_rr', 'ld', 'st'],
-  alu: ['add_rr', 'sub_rr', 'and_rr', 'xor_rr', 'cmp_rr', 'add_ri', 'sub_ri', 'and_ri', 'xor_ri', 'cmp_ri'],
-  flow: ['jmp_rel', 'jz', 'jnz', 'jmp_r', 'call', 'ret', 'leave'],
-  stack: ['push', 'pop', 'syscall'],
+const GROUPS: Record<'data' | 'math' | 'flow' | 'stack', InsnId[]> = {
+  data: ['nop', 'mov_i', 'mov_sp', 'mov_acc', 'swp', 'ld', 'st'],
+  math: ['add', 'sub', 'adj'],
+  flow: ['jmp', 'jez', 'jnz', 'call', 'ret'],
+  stack: ['push', 'pop', 'sys'],
 };
 
 const REPS = [1, 2, 4, 8, 16, 32];
 
-/** Operand template per form: register slots and how many hex digits. */
-function slots(form: Form): { regs: number; digits: number } {
-  switch (form) {
-    case 'none':
-      return { regs: 0, digits: 0 };
-    case 'r_imm':
-      return { regs: 1, digits: 4 };
-    case 'r_r':
-    case 'r_mem':
-    case 'mem_r':
-      return { regs: 2, digits: 0 };
-    case 'rel8':
-      return { regs: 0, digits: 2 };
-    case 'rel16':
-      return { regs: 0, digits: 4 };
-    case 'r':
-      return { regs: 1, digits: 0 };
-  }
-}
-
-/** Short palette label, e.g. "MOV r,imm". */
-function paletteLabel(def: InsnDef): string {
-  const ops: Record<Form, string> = {
-    none: '',
-    r_imm: ' r,imm',
-    r_r: ' d,s',
-    r_mem: ' d,[s]',
-    mem_r: ' [d],s',
-    rel8: ' rel8',
-    rel16: ' rel16',
-    r: ' r',
-  };
-  return def.mn + ops[def.form];
-}
-
-function signed8(v: number): number {
-  return v & 0x80 ? v - 0x100 : v;
-}
+/** Hex digits the operand of an instruction needs (0 or 4). */
+const digitsOf = (def: InsnDef) => (def.form === 'none' ? 0 : 4);
 
 export class PayloadEditor {
   readonly el = h('div', { class: 'editor' });
   private mode: Mode = 'byte';
   private digits = '';
   private tpl?: InsnDef;
-  private regs: number[] = [];
   private rep = 1;
   private sel: number;
   private clearArmed = false;
@@ -88,12 +50,11 @@ export class PayloadEditor {
     this.sel++;
     this.rep = 1;
     this.digits = '';
-    this.regs = [];
     this.changed();
   }
 
   private pressDigit(d: string): void {
-    const need = this.mode === 'byte' ? 2 : this.mode === 'word' ? 4 : this.tpl ? slots(this.tpl.form).digits : 0;
+    const need = this.mode === 'byte' ? 2 : this.mode === 'word' ? 4 : this.tpl ? digitsOf(this.tpl) : 0;
     if (this.digits.length >= need) return;
     this.digits += d;
     this.tryComplete();
@@ -108,8 +69,7 @@ export class PayloadEditor {
       const w = parseInt(this.digits, 16);
       this.insert({ bytes: [w & 0xff, w >> 8], label: `dw 0x${hex4(w)}`, rep: this.rep });
     } else if (this.mode === 'asm' && this.tpl) {
-      const need = slots(this.tpl.form);
-      if (this.regs.length === need.regs && this.digits.length === need.digits) {
+      if (this.digits.length === digitsOf(this.tpl)) {
         const insn = this.buildInsn(this.tpl);
         this.insert({ bytes: encode(insn), label: this.insnText(this.tpl), rep: this.rep });
       }
@@ -118,58 +78,30 @@ export class PayloadEditor {
 
   private buildInsn(def: InsnDef): Insn {
     const raw = this.digits ? parseInt(this.digits, 16) : 0;
-    const insn: Insn = { mn: def.mn, form: def.form, d: this.regs[0], s: this.regs[1] };
-    if (def.form === 'rel8') insn.imm = signed8(raw);
-    else if (def.form === 'rel16') insn.imm = raw & 0x8000 ? raw - 0x10000 : raw;
-    else insn.imm = raw;
-    return insn;
+    return { id: def.id, imm: def.form === 'rel' && raw & 0x8000 ? raw - 0x10000 : raw };
   }
 
-  /** Template text with filled-in operands, blanks shown as _. */
+  /** Template text with the operand filled in so far, blanks shown as _. */
   private insnText(def: InsnDef): string {
-    const need = slots(def.form);
-    const r = (i: number) => (this.regs[i] !== undefined ? REG_NAMES[this.regs[i]] : '_');
-    const digits = this.digits.padEnd(need.digits, '_');
-    switch (def.form) {
-      case 'none':
-        return def.mn;
-      case 'r_imm':
-        return `${def.mn} ${r(0)}, 0x${digits}`;
-      case 'r_r':
-        return `${def.mn} ${r(0)}, ${r(1)}`;
-      case 'r_mem':
-        return `${def.mn} ${r(0)}, [${r(1)}]`;
-      case 'mem_r':
-        return `${def.mn} [${r(0)}], ${r(1)}`;
-      case 'rel8':
-      case 'rel16': {
-        if (this.digits.length < need.digits) return `${def.mn} 0x${digits}`;
-        const v = this.buildInsn(def).imm ?? 0;
-        return `${def.mn} ${v >= 0 ? '+' : ''}${v}`;
-      }
-      case 'r':
-        return `${def.mn} ${r(0)}`;
+    if (def.form === 'none') return syntaxOf(def);
+    if (this.digits.length < 4) {
+      const v = `0x${this.digits.padEnd(4, '_')}`;
+      return def.form === 'rel' ? `${def.mn} ${v}` : syntaxOf(def).replace('v', v);
     }
+    const insn = this.buildInsn(def);
+    if (def.form === 'rel') return `${def.mn} ${insn.imm! >= 0 ? '+' : ''}${insn.imm}`;
+    return syntaxOf(def).replace('v', `0x${hex4(insn.imm!)}`);
   }
 
   private chooseTemplate(def: InsnDef): void {
     this.tpl = def;
-    this.regs = [];
     this.digits = '';
-    if (slots(def.form).regs === 0 && slots(def.form).digits === 0) this.tryComplete();
-    this.render();
-  }
-
-  private pickReg(r: number): void {
-    if (!this.tpl || this.regs.length >= slots(this.tpl.form).regs) return;
-    this.regs.push(r);
-    this.tryComplete();
+    if (digitsOf(def) === 0) this.tryComplete();
     this.render();
   }
 
   private backspace(): void {
     if (this.digits) this.digits = this.digits.slice(0, -1);
-    else if (this.regs.length) this.regs.pop();
     this.render();
   }
 
@@ -248,7 +180,6 @@ export class PayloadEditor {
         button(t[m], () => {
           this.mode = m;
           this.digits = '';
-          this.regs = [];
           this.render();
         }, this.mode === m ? 'on' : ''),
       ),
@@ -266,11 +197,10 @@ export class PayloadEditor {
       hint = fmt(t.wordHint, { word: `0x${w.toUpperCase()}`, bytes: `${w.slice(2)} ${w.slice(0, 2)}`.toUpperCase() });
     } else if (this.tpl) {
       composer = this.insnText(this.tpl);
-      const need = slots(this.tpl.form);
-      if (this.regs.length < need.regs) hint = t.pickReg;
-      else if (this.tpl.form === 'rel8' || this.tpl.form === 'rel16') hint = t.relHint;
-      else if (need.digits) hint = fmt(t.typeDigits, { n: need.digits });
-      hint = `${this.tpl.encoding} · ${hint}`;
+      const enc = `${hex2(this.tpl.op)}${this.tpl.form === 'none' ? '' : ' lo hi'}`;
+      if (this.tpl.form === 'rel') hint = t.relHint;
+      else if (this.tpl.form === 'imm') hint = this.tpl.id === 'adj' ? t.adjHint : fmt(t.typeDigits, { n: 4 });
+      hint = hint ? `${enc} · ${hint}` : enc;
     } else {
       composer = t.chooseInsn;
     }
@@ -290,8 +220,8 @@ export class PayloadEditor {
               { class: 'pal-btns' },
               GROUPS[g].map((id) => {
                 const def = INSN_DEFS.find((d) => d.id === id)!;
-                return button(paletteLabel(def), () => this.chooseTemplate(def), this.tpl?.id === id ? 'on op' : 'op', {
-                  title: S().insn[id as keyof Strings['insn']],
+                return button(syntaxOf(def), () => this.chooseTemplate(def), this.tpl?.id === id ? 'on op' : 'op', {
+                  title: S().insn[id],
                 });
               }),
             ),
@@ -299,15 +229,8 @@ export class PayloadEditor {
         ),
       );
 
-    const needRegs = this.mode === 'asm' && this.tpl && slots(this.tpl.form).regs > this.regs.length;
-    const regRow =
-      this.mode === 'asm' &&
-      this.tpl &&
-      slots(this.tpl.form).regs > 0 &&
-      h('div', { class: 'row regs' }, REG_NAMES.map((n, i) => button(n, () => this.pickReg(i), needRegs ? 'reg' : 'reg dim', { disabled: !needRegs })));
-
     const needDigits =
-      this.mode !== 'asm' || (this.tpl && slots(this.tpl.form).digits > this.digits.length && this.regs.length === slots(this.tpl.form).regs);
+      this.mode !== 'asm' || (this.tpl && digitsOf(this.tpl) > this.digits.length);
     const keypad = h(
       'div',
       { class: 'keypad' },
@@ -330,7 +253,6 @@ export class PayloadEditor {
       modes,
       h('div', { class: 'composer' }, h('div', { class: 'composer-text' }, composer), h('div', { class: 'dim small' }, hint)),
       palette,
-      regRow,
       keypad,
       repRow,
     );

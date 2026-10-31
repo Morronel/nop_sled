@@ -3,7 +3,10 @@
 export interface FrameSlot {
   /** i18n-free variable name as it appears in the C source, e.g. "badge[8]". */
   name: string;
-  /** Offset from the vulnerable function's BP. */
+  /**
+   * Offset from the vulnerable function's return-address slot (negative:
+   * locals sit below it). The SK-1 has no frame pointer.
+   */
   offset: number;
   size: number;
 }
@@ -43,7 +46,7 @@ export const STACK_TOP = 0x10000;
 export const CRT0 = `
 _start:
     CALL main
-    MOV  B, A
-    MOV  A, 0x3C        ; SYS_exit
-    SYSCALL
+    PUSH                ; status = main()
+    MOV  0x3C, ACC      ; SYS_exit
+    SYS
 `;

@@ -3,7 +3,7 @@
 
 import { assemble, type Program } from '../cpu/asm';
 import { CPU } from '../cpu/cpu';
-import { BP } from '../cpu/isa';
+import { SP } from '../cpu/isa';
 import { Memory, R, W, X } from '../cpu/memory';
 import { DATA_BASE, STACK_BASE, STACK_TOP, TEXT_BASE, type LevelDef, type Metrics } from './level';
 
@@ -56,8 +56,8 @@ export class Session {
   readonly entrySP: number;
   goalReached = false;
   goalAt?: { cycles: number; steps: number };
-  /** BP of the annotated frame once its prologue has run. */
-  frameBP?: number;
+  /** Address of the annotated function's return-address slot, once it has been called. */
+  frameRA?: number;
 
   constructor(
     readonly level: LevelDef,
@@ -84,7 +84,7 @@ export class Session {
     this.cpu = new CPU(mem, level.maxCycles ?? 5000);
     this.cpu.stdin = [...payload];
     this.entrySP = initialSP(env);
-    this.cpu.regs[4] = this.entrySP;
+    this.cpu.regs[SP] = this.entrySP;
     this.cpu.ip = this.program.symbols.get('_start')!;
   }
 
@@ -109,8 +109,8 @@ export class Session {
     const goal = this.level.goal;
     if (goal.type === 'reach' && !this.goalReached && cpu.ip === this.sym(goal.symbol)) this.markGoal();
     cpu.step();
-    // After PUSH BP; MOV BP, SP (3 bytes) the frame pointer is established.
-    if (this.frameBP === undefined && cpu.ip === this.sym(this.level.frame.fn) + 3) this.frameBP = cpu.regs[BP];
+    // On entry to the function, SP points at the return address CALL just pushed.
+    if (this.frameRA === undefined && cpu.ip === this.sym(this.level.frame.fn)) this.frameRA = cpu.regs[SP];
     // step() may have changed status; re-read it rather than trusting the narrowed type.
     if (goal.type === 'shell' && (cpu.status as string) === 'shell' && !this.goalReached) this.markGoal();
   }

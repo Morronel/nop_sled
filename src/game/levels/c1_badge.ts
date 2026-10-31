@@ -28,52 +28,56 @@ int main(void) {
 }`,
   text: `${CRT0}
 main:
-    PUSH BP
-    MOV  BP, SP
     CALL check_badge
-    XOR  A, A
-    LEAVE
+    MOV  0, ACC         ; return 0
     RET
 
 check_badge:
-    PUSH BP
-    MOV  BP, SP
-    SUB  SP, 10         ; clearance @ BP-2, badge @ BP-10
-    MOV  B, BP
-    SUB  B, 2
-    XOR  A, A
-    ST   [B], A         ; clearance = 0
-    XOR  B, B           ; fd 0   (A = 0 = SYS_read)
-    MOV  C, BP
-    SUB  C, 10          ; badge
-    MOV  D, 32
-    SYSCALL
-    MOV  B, BP
-    SUB  B, 2
-    LD   A, [B]
-    CMP  A, 0x1337
+    ADJ  -10            ; badge @ SP+0, clearance @ SP+8
+    MOV  SP, ACC
+    ADD  8
+    SWP                 ; PTR = &clearance
+    MOV  0, ACC
+    ST                  ; clearance = 0
+    MOV  32, ACC        ; read(0, badge, 32): push args right to left
+    PUSH
+    MOV  SP, ACC
+    ADD  2
+    PUSH                ;   badge
+    MOV  0, ACC
+    PUSH                ;   fd 0
+    SYS                 ; ACC = 0 = SYS_read
+    ADJ  6              ; drop the arguments
+    MOV  SP, ACC
+    ADD  8
+    SWP
+    LD                  ; ACC = clearance
+    SUB  0x1337
     JNZ  denied
     CALL win
 denied:
-    MOV  A, 1           ; SYS_write
-    MOV  B, 1
-    MOV  C, msg_denied
-    MOV  D, 14
-    SYSCALL
-    LEAVE
+    MOV  14, ACC        ; write(1, msg_denied, 14)
+    PUSH
+    MOV  msg_denied, ACC
+    PUSH
+    MOV  1, ACC
+    PUSH
+    SYS                 ; ACC = 1 = SYS_write
+    ADJ  16             ; drop the arguments and the locals
     RET
 
 win:
-    PUSH BP
-    MOV  BP, SP
-    MOV  A, 1
-    MOV  B, 1
-    MOV  C, flag
-    MOV  D, flag_end-flag
-    SYSCALL
-    MOV  A, 0x3C
-    XOR  B, B
-    SYSCALL
+    MOV  flag_end-flag, ACC
+    PUSH
+    MOV  flag, ACC
+    PUSH
+    MOV  1, ACC
+    PUSH
+    SYS                 ; write(1, flag, len)
+    MOV  0, ACC
+    PUSH
+    MOV  0x3C, ACC
+    SYS                 ; exit(0)
 `,
   data: `
 msg_denied: .ascii "ACCESS DENIED\\n"
@@ -90,5 +94,5 @@ flag_end:
       { name: 'badge[8]', offset: -10, size: 8 },
     ],
   },
-  par: { bytes: 10, cycles: 41, insns: 22 },
+  par: { bytes: 10, cycles: 36, insns: 24 },
 };

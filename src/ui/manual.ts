@@ -1,20 +1,9 @@
-// The "leaked" SK-16 programmer's manual, generated from the ISA tables.
+// The "leaked" SK-1 programmer's manual, generated from the ISA tables.
 
-import { INSN_DEFS, REG_NAMES } from '../cpu/isa';
+import { hex2, INSN_DEFS, REG_NAMES, sizeOf, syntaxOf } from '../cpu/isa';
 import { S } from '../i18n';
 import type { Strings } from '../i18n/en';
 import { h } from './dom';
-
-const FORM_OPS: Record<string, string> = {
-  none: '',
-  r_imm: ' r, imm16',
-  r_r: ' d, s',
-  r_mem: ' d, [s]',
-  mem_r: ' [d], s',
-  rel8: ' rel8',
-  rel16: ' rel16',
-  r: ' r',
-};
 
 const SYSCALLS: [string, keyof Strings['manual']['sys']][] = [
   ['0x00', 'read'],
@@ -26,7 +15,7 @@ const SYSCALLS: [string, keyof Strings['manual']['sys']][] = [
 
 export function manualView(): HTMLElement {
   const m = S().manual;
-  const regs = [...REG_NAMES, 'IP', 'FLAGS'] as (keyof Strings['manual']['regs'])[];
+  const regs = [...REG_NAMES, 'IP'] as (keyof Strings['manual']['regs'])[];
   return h(
     'div',
     { class: 'manual' },
@@ -51,7 +40,7 @@ export function manualView(): HTMLElement {
       h(
         'table',
         { class: 'ds' },
-        h('thead', null, h('tr', null, [m.cols.insn, m.cols.enc, m.cols.size, m.cols.cyc, m.cols.flags, m.cols.op].map((c) => h('th', null, c)))),
+        h('thead', null, h('tr', null, [m.cols.insn, m.cols.enc, m.cols.cyc, m.cols.op].map((c) => h('th', null, c)))),
         h(
           'tbody',
           null,
@@ -59,12 +48,10 @@ export function manualView(): HTMLElement {
             h(
               'tr',
               null,
-              h('td', { class: 'mono strong' }, d.mn + FORM_OPS[d.form]),
-              h('td', { class: 'mono' }, d.encoding),
-              h('td', null, d.size),
+              h('td', { class: 'mono strong' }, syntaxOf(d)),
+              h('td', { class: 'mono' }, sizeOf(d) === 1 ? hex2(d.op) : `${hex2(d.op)} lo hi`),
               h('td', null, d.cycles),
-              h('td', null, d.flags || '–'),
-              h('td', null, S().insn[d.id as keyof Strings['insn']]),
+              h('td', null, S().insn[d.id]),
             ),
           ),
         ),
@@ -78,12 +65,13 @@ export function manualView(): HTMLElement {
     h(
       'pre',
       { class: 'frame-diagram' },
-      `        ┌──────────────┐
- BP+2 → │ return addr  │ ← RET
- BP+0 → │ saved BP     │ ← LEAVE
- BP-2 → │ locals       │
-        │ char buf[]   │ ↑ input
-        └──────────────┘ ← SP`,
+      `           ┌──────────────┐
+           │ caller frame │
+ SP at   → │ return addr  │ ← RET pops this
+ entry     │ int  x       │
+           │ char buf[]   │ ↑ input is
+           └──────────────┘   written upward
+ SP after ADJ -n ↑`,
     ),
   );
 }

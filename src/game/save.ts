@@ -6,6 +6,8 @@ import type { Metrics } from './level';
 import { isChunkList, type Chunk } from './payload';
 
 const KEY = 'nopsled:v1';
+/** Payloads saved for an older instruction set are dropped; progress is kept. */
+const ISA = 'sk1';
 
 export interface LevelSave {
   solved?: boolean;
@@ -14,13 +16,14 @@ export interface LevelSave {
 }
 
 export interface SaveData {
+  isa?: string;
   lang?: Lang;
   theme?: 'amber' | 'green';
   crt?: boolean;
   levels: Record<string, LevelSave>;
 }
 
-let data: SaveData = { levels: {} };
+let data: SaveData = { isa: ISA, levels: {} };
 
 export function loadSave(): SaveData {
   try {
@@ -29,8 +32,9 @@ export function loadSave(): SaveData {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && parsed.levels && typeof parsed.levels === 'object') {
         for (const l of Object.values(parsed.levels) as LevelSave[]) {
-          if (l.payload && !isChunkList(l.payload)) delete l.payload;
+          if (l.payload && (parsed.isa !== ISA || !isChunkList(l.payload))) delete l.payload;
         }
+        parsed.isa = ISA;
         data = parsed;
       }
     }

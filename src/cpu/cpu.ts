@@ -1,6 +1,6 @@
-// SK-16 emulator: executes one instruction per step() and implements syscalls.
+// SK-1 emulator: executes one instruction per step() and implements syscalls.
 
-import { BP, SP, cyclesOf, decode, type Insn } from './isa';
+import { ACC, PTR, SP, cyclesOf, decode, type Insn } from './isa';
 import { Fault, Memory, R, W, type FaultKind, type Signal } from './memory';
 
 export type Status = 'running' | 'exited' | 'shell' | 'faulted' | 'timeout';
@@ -28,10 +28,9 @@ export interface SyscallRecord {
 }
 
 export class CPU {
-  readonly regs = new Uint16Array(6);
+  /** ACC, PTR, SP (see REG_NAMES). */
+  readonly regs = new Uint16Array(3);
   ip = 0;
-  z = false;
-  c = false;
   cycles = 0;
   steps = 0;
   status: Status = 'running';
@@ -48,6 +47,10 @@ export class CPU {
     public mem: Memory,
     public maxCycles = 5000,
   ) {}
+
+  get acc(): number {
+    return this.regs[ACC];
+  }
 
   get sp(): number {
     return this.regs[SP];
@@ -94,86 +97,66 @@ export class CPU {
     return v;
   }
 
-  private alu(mn: Insn['mn'], a: number, b: number): number {
-    let r: number;
-    switch (mn) {
-      case 'ADD':
-        r = a + b;
-        this.c = r > 0xffff;
-        break;
-      case 'SUB':
-      case 'CMP':
-        r = a - b;
-        this.c = a < b;
-        break;
-      case 'AND':
-        r = a & b;
-        this.c = false;
-        break;
-      default: // XOR
-        r = a ^ b;
-        this.c = false;
-    }
-    r &= 0xffff;
-    this.z = r === 0;
-    return r;
-  }
-
   private exec(insn: Insn): void {
     const g = this.regs;
-    const d = insn.d ?? 0;
-    const s = insn.s ?? 0;
     const imm = insn.imm ?? 0;
-    switch (insn.mn) {
-      case 'NOP':
+    const jump = () => (this.ip = (this.ip + imm) & 0xffff);
+    switch (insn.id) {
+      case 'nop':
         return;
-      case 'MOV':
-        g[d] = insn.form === 'r_imm' ? imm : g[s];
+      case 'mov_i':
+        g[ACC] = imm;
         return;
-      case 'LD':
-        g[d] = this.mem.read16(g[s]);
+      case 'mov_sp':
+        g[ACC] = g[SP];
         return;
-      case 'ST':
-        this.mem.write16(g[d], g[s]);
+      case 'mov_acc':
+        g[SP] = g[ACC];
         return;
-      case 'ADD':
-      case 'SUB':
-      case 'AND':
-      case 'XOR':
-      case 'CMP': {
-        const r = this.alu(insn.mn, g[d], insn.form === 'r_imm' ? imm : g[s]);
-        if (insn.mn !== 'CMP') g[d] = r;
+      case 'swp': {
+        const t = g[ACC];
+        g[ACC] = g[PTR];
+        g[PTR] = t;
         return;
       }
-      case 'JMP':
-        this.ip = insn.form === 'r' ? g[d] : (this.ip + imm) & 0xffff;
+      case 'add':
+        g[ACC] = g[ACC] + imm; // Uint16Array wraps
         return;
-      case 'JZ':
-        if (this.z) this.ip = (this.ip + imm) & 0xffff;
+      case 'sub':
+        g[ACC] = g[ACC] - imm;
         return;
-      case 'JNZ':
-        if (!this.z) this.ip = (this.ip + imm) & 0xffff;
+      case 'ld':
+        g[ACC] = this.mem.read16(g[PTR]);
         return;
-      case 'CALL':
+      case 'st':
+        this.mem.write16(g[PTR], g[ACC]);
+        return;
+      case 'push':
+        this.push(g[ACC]);
+        return;
+      case 'pop':
+        g[ACC] = this.pop();
+        return;
+      case 'adj':
+        g[SP] = g[SP] + imm;
+        return;
+      case 'jmp':
+        jump();
+        return;
+      case 'jez':
+        if (g[ACC] === 0) jump();
+        return;
+      case 'jnz':
+        if (g[ACC] !== 0) jump();
+        return;
+      case 'call':
         this.push(this.ip);
-        this.ip = (this.ip + imm) & 0xffff;
+        jump();
         return;
-      case 'RET':
+      case 'ret':
         this.ip = this.pop();
         return;
-      case 'LEAVE':
-        g[SP] = g[BP];
-        g[BP] = this.pop();
-        return;
-      case 'PUSH':
-        this.push(g[d]); // PUSH SP pushes the pre-decrement value, as on x86
-        return;
-      case 'POP': {
-        const v = this.pop();
-        g[d] = v; // POP SP: SP ends up holding the popped value
-        return;
-      }
-      case 'SYSCALL':
+      case 'sys':
         this.syscall();
         return;
     }
@@ -191,13 +174,18 @@ export class CPU {
     return undefined;
   }
 
+  /** Word read that reports unreadable memory instead of faulting (kernel-side copy). */
+  private peek16(addr: number): number | undefined {
+    if (!this.mem.can(addr, R) || !this.mem.can(addr + 1, R)) return undefined;
+    return this.mem.bytes[addr & 0xffff] | (this.mem.bytes[(addr + 1) & 0xffff] << 8);
+  }
+
   /** argv/envp check for execve: NULL, or a NULL-terminated array of string pointers. */
   private validStringArray(addr: number): boolean {
     if (addr === 0) return true;
     for (let i = 0; i < 32; i++) {
-      const p = (addr + i * 2) & 0xffff;
-      if (!this.mem.can(p, R) || !this.mem.can(p + 1, R)) return false;
-      const ptr = this.mem.bytes[p] | (this.mem.bytes[(p + 1) & 0xffff] << 8);
+      const ptr = this.peek16(addr + i * 2);
+      if (ptr === undefined) return false;
       if (ptr === 0) return true;
       if (this.readCString(ptr) === undefined) return false;
     }
@@ -206,76 +194,82 @@ export class CPU {
 
   private syscall(): void {
     const g = this.regs;
-    const nr = g[0];
-    const args: [number, number, number] = [g[1], g[2], g[3]];
+    const nr = g[ACC];
+    // Arguments are the three words at SP, SP+2, SP+4 (pushed right to left).
+    const raw = [0, 2, 4].map((o) => this.peek16(g[SP] + o));
+    const args = raw.map((v) => v ?? 0) as [number, number, number];
     const [b, c, d] = args;
     const rec: SyscallRecord = { nr, args, ret: 0 };
     let ret: number;
-    switch (nr) {
-      case SYS.READ: {
-        if (b !== 0) {
-          ret = ERR.EBADF;
-          break;
-        }
-        let n = 0;
-        while (n < d && this.stdinPos < this.stdin.length) {
-          const a = (c + n) & 0xffff;
-          if (!this.mem.can(a, W)) break;
-          this.mem.write8(a, this.stdin[this.stdinPos++], true);
-          n++;
-        }
-        ret = n === 0 && d > 0 && this.stdinPos < this.stdin.length ? ERR.EFAULT : n;
-        break;
-      }
-      case SYS.WRITE: {
-        if (b !== 1 && b !== 2) {
-          ret = ERR.EBADF;
-          break;
-        }
-        const out: number[] = [];
-        let okRead = true;
-        for (let i = 0; i < d; i++) {
-          const a = (c + i) & 0xffff;
-          if (!this.mem.can(a, R)) {
-            okRead = false;
+    if (raw.some((v) => v === undefined)) {
+      ret = ERR.EFAULT;
+    } else {
+      switch (nr) {
+        case SYS.READ: {
+          if (b !== 0) {
+            ret = ERR.EBADF;
             break;
           }
-          out.push(this.mem.bytes[a]);
-        }
-        if (!okRead) {
-          ret = ERR.EFAULT;
+          let n = 0;
+          while (n < d && this.stdinPos < this.stdin.length) {
+            const a = (c + n) & 0xffff;
+            if (!this.mem.can(a, W)) break;
+            this.mem.write8(a, this.stdin[this.stdinPos++], true);
+            n++;
+          }
+          ret = n === 0 && d > 0 && this.stdinPos < this.stdin.length ? ERR.EFAULT : n;
           break;
         }
-        this.stdout.push(...out);
-        ret = d;
-        break;
-      }
-      case SYS.ACCESS:
-        ret = this.mem.can(b, R) ? ERR.ENOENT : ERR.EFAULT;
-        break;
-      case SYS.EXECVE: {
-        const path = this.readCString(b);
-        rec.path = path;
-        if (path === undefined || !this.validStringArray(c) || !this.validStringArray(d)) {
-          ret = ERR.EFAULT;
-        } else if (path === '/bin/sh') {
-          this.status = 'shell';
-          ret = 0;
-        } else {
-          ret = ERR.ENOENT;
+        case SYS.WRITE: {
+          if (b !== 1 && b !== 2) {
+            ret = ERR.EBADF;
+            break;
+          }
+          const out: number[] = [];
+          let okRead = true;
+          for (let i = 0; i < d; i++) {
+            const a = (c + i) & 0xffff;
+            if (!this.mem.can(a, R)) {
+              okRead = false;
+              break;
+            }
+            out.push(this.mem.bytes[a]);
+          }
+          if (!okRead) {
+            ret = ERR.EFAULT;
+            break;
+          }
+          this.stdout.push(...out);
+          ret = d;
+          break;
         }
-        break;
+        case SYS.ACCESS:
+          ret = this.mem.can(b, R) ? ERR.ENOENT : ERR.EFAULT;
+          break;
+        case SYS.EXECVE: {
+          const path = this.readCString(b);
+          rec.path = path;
+          if (path === undefined || !this.validStringArray(c) || !this.validStringArray(d)) {
+            ret = ERR.EFAULT;
+          } else if (path === '/bin/sh') {
+            this.status = 'shell';
+            ret = 0;
+          } else {
+            ret = ERR.ENOENT;
+          }
+          break;
+        }
+        case SYS.EXIT:
+          this.status = 'exited';
+          this.exitCode = b;
+          ret = 0;
+          break;
+        default:
+          ret = ERR.ENOSYS;
       }
-      case SYS.EXIT:
-        this.status = 'exited';
-        this.exitCode = b;
-        ret = 0;
-        break;
-      default:
-        ret = ERR.ENOSYS;
     }
     rec.ret = ret;
     this.syscalls.push(rec);
-    if (this.status === 'running') g[0] = ret;
+    if (this.status === 'running') g[ACC] = ret;
   }
 }
